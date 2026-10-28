@@ -49,8 +49,49 @@ module.exports = function (router) {
     });
 
     // PUT /users/:id -> replace entire user or 404 
+    userRoute.put(async function (req, res) {
+        try {
+            if (!mongoose.isValidObjectId(req.params.id)) {
+                return res.status(404).json({ message: 'User not found', data: null });
+            }
+            var replacement = Object.assign({}, req.body);
+            delete replacement._id;
+            if (!replacement.dateCreated) replacement.dateCreated = new Date();
+            if (!replacement.pendingTasks) replacement.pendingTasks = [];
+ 
+            var user = await User.findOneAndReplace(
+                { _id: req.params.id },
+                replacement,
+                { new: true, runValidators: true }
+            );
+            if (!user) {
+                return res.status(404).json({ message: 'User not found', data: null });
+            }
+            res.status(200).json({ message: 'User updated', data: user });
+        } catch (err) {
+            var status = errorStatus(err);
+            res.status(status).json({
+                message: status === 400 ? 'Bad request' : 'Server error',
+                data: err.message
+            });
+        }
+    });
 
     // DELETE /users/:id -> delete user or 404
+    userRoute.delete(async function (req, res) {
+        try {
+            if (!mongoose.isValidObjectId(req.params.id)) {
+                return res.status(404).json({ message: 'User not found', data: null });
+            }
+            var user = await User.findByIdAndDelete(req.params.id);
+            if (!user) {
+                return res.status(404).json({ message: 'User not found', data: null });
+            }
+            res.status(200).json({ message: 'User deleted', data: user });
+        } catch (err) {
+            res.status(500).json({ message: 'Server error', data: err.message });
+        }
+    });
 
     return router;
 };
