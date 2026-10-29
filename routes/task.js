@@ -44,7 +44,30 @@ module.exports = function (router) {
     // POST /tasks -> create task 
     tasksRoute.post(async function(req, res) {
         try {
-            var task = await Task.create(req.body);
+            var replacement = Object.assign({}, req.body);
+            var assignedUserId = replacement.assignedUser || '';
+            var assignedUser = null;
+            if (assignedUserId) {
+                if (!mongoose.isValidObjectId(assignedUserId)) {
+                    return res.status(400).json({ message: 'Bad request', data: null });
+                }
+                assignedUser = await require('../models/user').findById(assignedUserId);
+                if (!assignedUser) return res.status(404).json({ message: 'User not found', data: null });
+                if (Object.prototype.hasOwnProperty.call(replacement, 'assignedUserName') && replacement.assignedUserName !== assignedUser.name) {
+                    return res.status(400).json({ message: 'Bad request', data: null });
+                }
+                replacement.assignedUserName = assignedUser.name;
+            } else {
+                replacement.assignedUser = '';
+                replacement.assignedUserName = 'unassigned';
+            }
+            var task = await Task.create(replacement);
+            if (assignedUser && !task.completed) {
+                await require('../models/user').updateOne(
+                    { _id: assignedUser._id },
+                    { $addToSet: { pendingTasks: String(task._id) } }
+                );
+            }
             res.status(201).json({ message: 'Task created', data: task });
         } catch (err) {
             res.status(400).json({ message: 'Bad request', data: err.message });
@@ -79,23 +102,40 @@ module.exports = function (router) {
             if (!mongoose.isValidObjectId(req.params.id)) {
                 return res.status(404).json({ message: 'Task not found', data: null });
             }
+            var oldTask = await Task.findById(req.params.id);
+            if (!oldTask) return res.status(404).json({ message: 'Task not found', data: null });
             var replacement = Object.assign({}, req.body);
             delete replacement._id;
-            if (!replacement.dateCreated) replacement.dateCreated = new Date();
- 
-            var task = await Task.findOneAndReplace(
-                { _id: req.params.id },
-                replacement,
-                { new: true, runValidators: true }
-            );
-            if (!task) {
-                return res.status(404).json({ message: 'Task not found', data: null });
+            replacement.dateCreated = oldTask.dateCreated;
+            var User = require('../models/user');
+            var assignedUserId = replacement.assignedUser || '';
+            var assignedUser = null;
+            if (assignedUserId) {
+                if (!mongoose.isValidObjectId(assignedUserId)) {
+                    return res.status(400).json({ message: 'Bad request', data: null });
+                }
+                assignedUser = await User.findById(assignedUserId);
+                if (!assignedUser) return res.status(404).json({ message: 'User not found', data: null });
+                if (Object.prototype.hasOwnProperty.call(replacement, 'assignedUserName') && replacement.assignedUserName !== assignedUser.name) {
+                    return res.status(400).json({ message: 'Bad request', data: null });
+                }
+                replacement.assignedUserName = assignedUser.name;
+            } else {
+                replacement.assignedUser = '';
+                replacement.assignedUserName = 'unassigned';
+            }
+            var task = await Task.findOneAndReplace({ _id: req.params.id }, replacement, { new: true, runValidators: true });
+            if (oldTask.assignedUser) {
+                await User.updateOne({ _id: oldTask.assignedUser }, { $pull: { pendingTasks: String(oldTask._id) } });
+            }
+            if (assignedUser && !task.completed) {
+                await User.updateOne({ _id: assignedUser._id }, { $addToSet: { pendingTasks: String(task._id) } });
             }
             res.status(200).json({ message: 'Task updated', data: task });
         } catch (err) {
             var status = errorStatus(err);
-            res.status(status).json({
-                message: status === 400 ? 'Bad request' : 'Server error',
+            res.status(status.status).json({
+                message: status.status === 400 ? 'Bad request' : 'Server error',
                 data: err.message
             });
         }

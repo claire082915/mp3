@@ -80,24 +80,53 @@ module.exports = function (router) {
             if (!mongoose.isValidObjectId(req.params.id)) {
                 return res.status(404).json({ message: 'User not found', data: null });
             }
+            var existingUser = await User.findById(req.params.id);
+            if (!existingUser) return res.status(404).json({ message: 'User not found', data: null });
             var replacement = Object.assign({}, req.body);
             delete replacement._id;
-            if (!replacement.dateCreated) replacement.dateCreated = new Date();
+            replacement.dateCreated = existingUser.dateCreated;
             if (!replacement.pendingTasks) replacement.pendingTasks = [];
- 
-            var user = await User.findOneAndReplace(
-                { _id: req.params.id },
-                replacement,
-                { new: true, runValidators: true }
-            );
-            if (!user) {
-                return res.status(404).json({ message: 'User not found', data: null });
+
+            var Task = require('../models/task');
+            if (!Array.isArray(replacement.pendingTasks)) {
+                return res.status(400).json({ message: 'Bad request', data: null });
             }
+            var requestedIds = replacement.pendingTasks.map(String);
+            if (requestedIds.some(function(id) { return !mongoose.isValidObjectId(id); })) {
+                return res.status(400).json({ message: 'Bad request', data: null });
+            }
+            var requestedTasks = await Task.find({ _id: { $in: requestedIds } });
+            if (requestedTasks.length !== new Set(requestedIds).size) {
+                return res.status(404).json({ message: 'Task not found', data: null });
+            }
+            if (requestedTasks.some(function(task) { return task.completed; })) {
+                return res.status(400).json({ message: 'Bad request', data: null });
+            }
+            var candidate = new User(replacement);
+            await candidate.validate();
+            var duplicate = await User.findOne({ email: replacement.email, _id: { $ne: existingUser._id } });
+            if (duplicate) return res.status(400).json({ message: 'Bad request', data: null });
+
+            var oldIds = existingUser.pendingTasks.map(String);
+            var addedIds = requestedIds.filter(function(id) { return !oldIds.includes(id); });
+            var removedIds = oldIds.filter(function(id) { return !requestedIds.includes(id); });
+            for (var removedId of removedIds) {
+                await Task.updateOne({ _id: removedId, assignedUser: String(existingUser._id) }, { $set: { assignedUser: '', assignedUserName: 'unassigned' } });
+            }
+            for (var requestedTask of requestedTasks) {
+                if (requestedTask.assignedUser && requestedTask.assignedUser !== String(existingUser._id)) {
+                    await User.updateOne({ _id: requestedTask.assignedUser }, { $pull: { pendingTasks: String(requestedTask._id) } });
+                }
+                await Task.updateOne({ _id: requestedTask._id }, { $set: { assignedUser: String(existingUser._id), assignedUserName: replacement.name } });
+            }
+            // Also update task names for tasks already assigned to this user.
+            await Task.updateMany({ assignedUser: String(existingUser._id) }, { $set: { assignedUserName: replacement.name } });
+            var user = await User.findOneAndReplace({ _id: req.params.id }, replacement, { new: true, runValidators: true });
             res.status(200).json({ message: 'User updated', data: user });
         } catch (err) {
             var status = errorStatus(err);
-            res.status(status).json({
-                message: status === 400 ? 'Bad request' : 'Server error',
+            res.status(status.status).json({
+                message: status.status === 400 ? 'Bad request' : 'Server error',
                 data: err.message
             });
         }
