@@ -1,5 +1,6 @@
 var mongoose = require('mongoose');
 var User = require('../models/user');
+var queryOptions = require('./query');
 
 function errorStatus(err) {
     if (err.name === 'ValidationError' || err.name === 'CastError') {
@@ -15,9 +16,28 @@ module.exports = function (router) {
     // GET /users -> list of users
     usersRoute.get(async function (req, res) {
         try {
-            var users = await User.find();
+            var where = queryOptions.parseObject(req.query.where, 'where') || {};
+            var sort = queryOptions.parseObject(req.query.sort, 'sort');
+            var select = queryOptions.parseObject(req.query.select, 'select');
+            var skip = queryOptions.parseNumber(req.query.skip, 'skip', 0);
+            var limit = queryOptions.parseNumber(req.query.limit, 'limit', 0);
+
+            if (queryOptions.isTrue(req.query.count)) {
+                var count = await User.countDocuments(where);
+                return res.status(200).json({ message: 'OK', data: count });
+            }
+
+            var query = User.find(where);
+            if (sort) query = query.sort(sort);
+            if (select) query = query.select(select);
+            query = query.skip(skip);
+            if (limit > 0) query = query.limit(limit);
+            var users = await query;
             res.status(200).json({ message: 'OK', data: users });
         } catch (err) {
+            if (err instanceof SyntaxError || err.message.includes('must be a JSON object') || err.message.includes('must be a non-negative integer')) {
+                return res.status(400).json({ message: 'Bad request', data: null });
+            }
             res.status(500).json({ message: 'Server error', data: err.message });
         }
     });
@@ -28,12 +48,18 @@ module.exports = function (router) {
             if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
                 return res.status(400).json({ message: 'Invalid user ID', data: null });
             }
-            var user = await User.findById(req.params.id);
+            var query = User.findById(req.params.id);
+            var select = queryOptions.parseObject(req.query.select, 'select');
+            if (select) query = query.select(select);
+            var user = await query;
             if (!user) {
                 return res.status(404).json({ message: 'User not found', data: null });
             }
             res.status(200).json({ message: 'OK', data: user });
         } catch (err) {
+            if (err instanceof SyntaxError || err.message.includes('must be a JSON object')) {
+                return res.status(400).json({ message: 'Bad request', data: null });
+            }
             res.status(500).json({ message: 'Server error', data: err.message });
         }
     });
